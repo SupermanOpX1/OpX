@@ -3,6 +3,7 @@ name: Mirror hosting -> GitHub (mixed paths + auto filename)
 on:
   workflow_dispatch:
 
+# ===== GLOBAL WORKFLOW LOCK =====
 concurrency:
   group: mirror-hosting
   cancel-in-progress: true
@@ -10,7 +11,23 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+
+    # ===== JOB LEVEL LOCK =====
+    concurrency:
+      group: mirror-hosting-job
+      cancel-in-progress: true
+
     steps:
+      - name: Prevent duplicate start (repo state check)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # If another run already pushing → exit
+          if git ls-remote origin refs/heads/main >/dev/null 2>&1; then
+            echo "Repo reachable"
+          fi
+
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
@@ -31,7 +48,7 @@ jobs:
           BASE_ROOT="https://nskmedia.net/rizwan"
           BASE_42="https://nskmedia.net/rizwan/4.2"
 
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
           FOLDERS_42=(GL KR TW VNG)
           FOLDERS_ROOT=(BGMI GLITCH LDPLAYER LOG TEST1 TEST2 TEST3 TEST4)
@@ -41,15 +58,9 @@ jobs:
           fallback_for_folder () {
             local folder="$1"
             case "$folder" in
-              BGMI)
-                printf "%s\n" "libopenplatform.so" "libswappy.so"
-                ;;
-              LOG)
-                printf "%s\n" "adb" "AdbWinApi"
-                ;;
-              *)
-                printf "%s\n" "${FALLBACK_DEFAULT[@]}"
-                ;;
+              BGMI) printf "%s\n" "libopenplatform.so" "libswappy.so" ;;
+              LOG) printf "%s\n" "adb" "AdbWinApi" ;;
+              *) printf "%s\n" "${FALLBACK_DEFAULT[@]}" ;;
             esac
           }
 
@@ -59,10 +70,7 @@ jobs:
             html="$(mktemp)"
             code="$(curl -L -A "$UA" -sS -o "$html" -w "%{http_code}" "${folder_url}/" || true)"
 
-            if [[ "$code" != "200" ]]; then
-              rm -f "$html"
-              return 1
-            fi
+            [[ "$code" != "200" ]] && rm -f "$html" && return 1
 
             grep -Eo 'href="[^"]+"' "$html" \
               | sed 's/^href="//; s/"$//' \
@@ -71,7 +79,6 @@ jobs:
               | sort -u
 
             rm -f "$html"
-            return 0
           }
 
           sync_file () {
@@ -85,16 +92,8 @@ jobs:
             local code
             code="$(curl -L -A "$UA" -sS -o "$tmp" -w "%{http_code}" "$url" || true)"
 
-            if [[ "$code" == "404" ]]; then
-              rm -f "$tmp"
-              [[ -f "$dest" ]] && rm -f "$dest"
-              return 0
-            fi
-
-            if [[ "$code" != "200" ]]; then
-              rm -f "$tmp"
-              return 0
-            fi
+            [[ "$code" == "404" ]] && rm -f "$tmp" && rm -f "$dest" && return 0
+            [[ "$code" != "200" ]] && rm -f "$tmp" && return 0
 
             if [[ ! -f "$dest" ]]; then
               mv -f "$tmp" "$dest"
@@ -106,7 +105,6 @@ jobs:
             sha_old="$(sha256sum "$dest" | awk '{print $1}')"
 
             [[ "$sha_new" == "$sha_old" ]] && rm -f "$tmp" && return 0
-
             mv -f "$tmp" "$dest"
           }
 
@@ -116,31 +114,23 @@ jobs:
             local dest_prefix="$3"
 
             local folder_url="${base}/${folder}"
-
             mapfile -t files < <(discover_files "$folder_url" || true)
 
-            if [[ "${#files[@]}" -eq 0 ]]; then
-              mapfile -t files < <(fallback_for_folder "$folder")
-            fi
+            [[ "${#files[@]}" -eq 0 ]] && mapfile -t files < <(fallback_for_folder "$folder")
 
             for fname in "${files[@]}"; do
-              local url="${folder_url}/${fname}"
-              local dest="${dest_prefix}/${folder}/${fname}"
-              sync_file "$url" "$dest"
+              sync_file "${folder_url}/${fname}" "${dest_prefix}/${folder}/${fname}"
             done
           }
 
-          # 4.2 folders
           for f in "${FOLDERS_42[@]}"; do
             process_folder "$f" "$BASE_42" "4.2"
           done
 
-          # root folders
           for f in "${FOLDERS_ROOT[@]}"; do
             process_folder "$f" "$BASE_ROOT" "."
           done
 
-          # ===== 4.2 ROOT SINGLE FILES =====
           sync_file "${BASE_42}/status" "4.2/status"
           sync_file "${BASE_42}/libswappy.so" "4.2/libswappy.so"
 
@@ -152,25 +142,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git config merge.ours.driver true
-
-          if [[ ! -f .gitattributes ]]; then
-            cat > .gitattributes <<'EOF'
-          *.so merge=ours -text
-          *.dll merge=ours -text
-          *.exe merge=ours -text
-          EOF
-            git add .gitattributes
-          fi
-
           git add -A
-          git diff --cached --quiet && exit 0
+          git diff --cached --quiet && echo "No changes" && exit 0
 
           git commit -m "Mirror hosting folders"
 
+          # ===== SAFE PUSH LOOP =====
           for i in 1 2 3; do
             git fetch origin main
-            git pull --rebase --autostash origin main || true
+            git rebase origin/main || true
             git push origin HEAD:main && exit 0
             sleep 2
           done
