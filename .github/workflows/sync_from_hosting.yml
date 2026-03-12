@@ -3,7 +3,6 @@ name: Mirror hosting -> GitHub (mixed paths + auto filename)
 on:
   workflow_dispatch:
 
-# ===== GLOBAL WORKFLOW LOCK =====
 concurrency:
   group: mirror-hosting
   cancel-in-progress: true
@@ -12,28 +11,17 @@ jobs:
   sync:
     runs-on: ubuntu-latest
 
-    # ===== JOB LEVEL LOCK =====
     concurrency:
       group: mirror-hosting-job
       cancel-in-progress: true
 
     steps:
-      - name: Prevent duplicate start (repo state check)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # If another run already pushing → exit
-          if git ls-remote origin refs/heads/main >/dev/null 2>&1; then
-            echo "Repo reachable"
-          fi
-
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Sync to latest main (before download)
+      - name: Sync to latest main
         shell: bash
         run: |
           set -euo pipefail
@@ -45,12 +33,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ===== GLOBAL VERSION =====
+          VERSION="4.3"
+
           BASE_ROOT="https://nskmedia.net/rizwan"
-          BASE_42="https://nskmedia.net/rizwan/4.2"
+          BASE_VERSION="${BASE_ROOT}/${VERSION}"
 
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
-          FOLDERS_42=(GL KR TW VNG)
+          FOLDERS_VERSION=(GL KR TW VNG)
           FOLDERS_ROOT=(BGMI GLITCH LDPLAYER LOG TEST1 TEST2 TEST3 TEST4)
 
           FALLBACK_DEFAULT=("libopenplatform.so")
@@ -123,16 +114,18 @@ jobs:
             done
           }
 
-          for f in "${FOLDERS_42[@]}"; do
-            process_folder "$f" "$BASE_42" "4.2"
+          # ===== VERSIONED FOLDERS =====
+          for f in "${FOLDERS_VERSION[@]}"; do
+            process_folder "$f" "$BASE_VERSION" "$VERSION"
           done
 
+          # ===== ROOT FOLDERS =====
           for f in "${FOLDERS_ROOT[@]}"; do
             process_folder "$f" "$BASE_ROOT" "."
           done
 
-          sync_file "${BASE_42}/status" "4.2/status"
-          sync_file "${BASE_42}/libswappy.so" "4.2/libswappy.so"
+          sync_file "${BASE_VERSION}/status" "${VERSION}/status"
+          sync_file "${BASE_VERSION}/libswappy.so" "${VERSION}/libswappy.so"
 
       - name: Commit & push if changed
         shell: bash
@@ -147,7 +140,6 @@ jobs:
 
           git commit -m "Mirror hosting folders"
 
-          # ===== SAFE PUSH LOOP =====
           for i in 1 2 3; do
             git fetch origin main
             git rebase origin/main || true
