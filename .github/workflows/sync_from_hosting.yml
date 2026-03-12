@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
 
           BASE_ROOT="https://nskmedia.net/rizwan"
-          BASE_42="https://nskmedia.net/rizwan/4.3"
+          BASE_42="https://nskmedia.net/rizwan/4.2"
 
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
