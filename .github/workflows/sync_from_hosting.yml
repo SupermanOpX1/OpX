@@ -34,7 +34,7 @@ jobs:
           set -euo pipefail
 
           # ===== GLOBAL VERSION =====
-          VERSION="4.3"
+          VERSION="4.4"
 
           BASE_ROOT="https://nskmedia.net/rizwan"
           BASE_VERSION="${BASE_ROOT}/${VERSION}"
@@ -125,7 +125,7 @@ jobs:
           done
 
           sync_file "${BASE_VERSION}/status" "${VERSION}/status"
-          sync_file "${BASE_VERSION}/libswappy.so" "${VERSION}/libswappy.so"
+          sync_file "${BASE_VERSION}/libCrashSight.so" "${VERSION}/libCrashSight.so"
 
       - name: Commit & push if changed
         shell: bash
