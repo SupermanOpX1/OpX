@@ -34,7 +34,7 @@ jobs:
           set -euo pipefail
 
           # ===== GLOBAL VERSION =====
-          VERSION="4.4"
+          VERSION="4.5"
 
           BASE_ROOT="https://nskmedia.net/rizwan"
           BASE_VERSION="${BASE_ROOT}/${VERSION}"
