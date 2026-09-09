@@ -48,20 +48,42 @@ jobs:
 
           fallback_for_folder () {
             local folder="$1"
+
             case "$folder" in
-              BGMI) printf "%s\n" "libopenplatform.so" "libswappy.so" ;;
-              LOG) printf "%s\n" "adb" "AdbWinApi" ;;
-              *) printf "%s\n" "${FALLBACK_DEFAULT[@]}" ;;
+              BGMI)
+                printf "%s\n" \
+                  "libopenplatform.so" \
+                  "libswappy.so"
+                ;;
+
+              LOG)
+                printf "%s\n" \
+                  "adb" \
+                  "AdbWinApi" \
+                  "libCrashSight.so"
+                ;;
+
+              *)
+                printf "%s\n" "${FALLBACK_DEFAULT[@]}"
+                ;;
             esac
           }
 
           discover_files () {
             local folder_url="$1"
             local html code
-            html="$(mktemp)"
-            code="$(curl -L -A "$UA" -sS -o "$html" -w "%{http_code}" "${folder_url}/" || true)"
 
-            [[ "$code" != "200" ]] && rm -f "$html" && return 1
+            html="$(mktemp)"
+
+            code="$(curl -L -A "$UA" -sS \
+              -o "$html" \
+              -w "%{http_code}" \
+              "${folder_url}/" || true)"
+
+            if [[ "$code" != "200" ]]; then
+              rm -f "$html"
+              return 1
+            fi
 
             grep -Eo 'href="[^"]+"' "$html" \
               | sed 's/^href="//; s/"$//' \
@@ -77,25 +99,47 @@ jobs:
             local dest="$2"
 
             mkdir -p "$(dirname "$dest")"
+
             local tmp
             tmp="$(mktemp)"
 
             local code
-            code="$(curl -L -A "$UA" -sS -o "$tmp" -w "%{http_code}" "$url" || true)"
+            code="$(curl -L -A "$UA" -sS \
+              -o "$tmp" \
+              -w "%{http_code}" \
+              "$url" || true)"
 
-            [[ "$code" == "404" ]] && rm -f "$tmp" && rm -f "$dest" && return 0
-            [[ "$code" != "200" ]] && rm -f "$tmp" && return 0
+            # File removed from hosting
+            if [[ "$code" == "404" ]]; then
+              rm -f "$tmp"
+              rm -f "$dest"
+              return 0
+            fi
 
+            # Ignore other HTTP errors
+            if [[ "$code" != "200" ]]; then
+              rm -f "$tmp"
+              return 0
+            fi
+
+            # New file
             if [[ ! -f "$dest" ]]; then
               mv -f "$tmp" "$dest"
               return 0
             fi
 
+            # Compare existing file
             local sha_new sha_old
+
             sha_new="$(sha256sum "$tmp" | awk '{print $1}')"
             sha_old="$(sha256sum "$dest" | awk '{print $1}')"
 
-            [[ "$sha_new" == "$sha_old" ]] && rm -f "$tmp" && return 0
+            if [[ "$sha_new" == "$sha_old" ]]; then
+              rm -f "$tmp"
+              return 0
+            fi
+
+            # Updated file
             mv -f "$tmp" "$dest"
           }
 
@@ -105,27 +149,49 @@ jobs:
             local dest_prefix="$3"
 
             local folder_url="${base}/${folder}"
-            mapfile -t files < <(discover_files "$folder_url" || true)
 
-            [[ "${#files[@]}" -eq 0 ]] && mapfile -t files < <(fallback_for_folder "$folder")
+            mapfile -t files < <(
+              discover_files "$folder_url" || true
+            )
+
+            # Use fallback if directory listing cannot be discovered
+            if [[ "${#files[@]}" -eq 0 ]]; then
+              mapfile -t files < <(
+                fallback_for_folder "$folder"
+              )
+            fi
 
             for fname in "${files[@]}"; do
-              sync_file "${folder_url}/${fname}" "${dest_prefix}/${folder}/${fname}"
+              sync_file \
+                "${folder_url}/${fname}" \
+                "${dest_prefix}/${folder}/${fname}"
             done
           }
 
           # ===== VERSIONED FOLDERS =====
           for f in "${FOLDERS_VERSION[@]}"; do
-            process_folder "$f" "$BASE_VERSION" "$VERSION"
+            process_folder \
+              "$f" \
+              "$BASE_VERSION" \
+              "$VERSION"
           done
 
           # ===== ROOT FOLDERS =====
           for f in "${FOLDERS_ROOT[@]}"; do
-            process_folder "$f" "$BASE_ROOT" "."
+            process_folder \
+              "$f" \
+              "$BASE_ROOT" \
+              "."
           done
 
-          sync_file "${BASE_VERSION}/status" "${VERSION}/status"
-          sync_file "${BASE_VERSION}/libCrashSight.so" "${VERSION}/libCrashSight.so"
+          # ===== VERSION ROOT FILES =====
+          sync_file \
+            "${BASE_VERSION}/status" \
+            "${VERSION}/status"
+
+          sync_file \
+            "${BASE_VERSION}/libCrashSight.so" \
+            "${VERSION}/libCrashSight.so"
 
       - name: Commit & push if changed
         shell: bash
@@ -136,14 +202,25 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add -A
-          git diff --cached --quiet && echo "No changes" && exit 0
+
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
 
           git commit -m "Mirror hosting folders"
 
           for i in 1 2 3; do
             git fetch origin main
-            git rebase origin/main || true
-            git push origin HEAD:main && exit 0
+
+            git rebase origin/main || {
+              git rebase --abort || true
+            }
+
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+
             sleep 2
           done
 
