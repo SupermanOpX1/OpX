@@ -7,6 +7,9 @@ concurrency:
   group: mirror-hosting
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -33,42 +36,54 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ===== GLOBAL VERSION =====
+          # ===== GLOBAL VERSION & URLS =====
           VERSION="4.7"
 
           BASE_ROOT="https://nskmedia.net/rizwan"
           BASE_VERSION="${BASE_ROOT}/${VERSION}"
+          BASE_BPDLL="${BASE_ROOT}/BpDllUpdates"
 
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
+          # Versioned folders (e.g. 4.7/GL)
           FOLDERS_VERSION=(GL KR TW VNG)
+
+          # Root folders (e.g. ./BGMI)
           FOLDERS_ROOT=(BGMI GLITCH LDPLAYER LOG TEST1 TEST2 TEST3 TEST4)
+
+          # Known subfolders under BpDllUpdates (from cPanel)
+          KNOWN_BPDLL_SUBFOLDERS=(EOMAX Loki MrEslam Shadow SuperRussia)
+          BPDLL_SUBFOLDERS=("${KNOWN_BPDLL_SUBFOLDERS[@]}")
 
           FALLBACK_DEFAULT=("libopenplatform.so")
 
-          fallback_for_folder () {
-            local folder="$1"
+          # Discover directories inside a given folder URL (e.g. BpDllUpdates/)
+          discover_subfolders () {
+            local folder_url="$1"
+            local html code
 
-            case "$folder" in
-              BGMI)
-                printf "%s\n" \
-                  "libopenplatform.so" \
-                  "libswappy.so"
-                ;;
+            html="$(mktemp)"
 
-              LOG)
-                printf "%s\n" \
-                  "adb" \
-                  "AdbWinApi" \
-                  "libCrashSight.so"
-                ;;
+            code="$(curl -L -A "$UA" -sS \
+              -o "$html" \
+              -w "%{http_code}" \
+              "${folder_url}/" || true)"
 
-              *)
-                printf "%s\n" "${FALLBACK_DEFAULT[@]}"
-                ;;
-            esac
+            if [[ "$code" != "200" ]]; then
+              rm -f "$html"
+              return 1
+            fi
+
+            grep -Eo 'href="[^"]+/"' "$html" \
+              | sed 's/^href="//; s/"$//' \
+              | grep -vE '^\?|^/|^\.\./' \
+              | sed 's#/$##' \
+              | sort -u || true
+
+            rm -f "$html"
           }
 
+          # Discover files inside a given folder URL
           discover_files () {
             local folder_url="$1"
             local html code
@@ -89,9 +104,54 @@ jobs:
               | sed 's/^href="//; s/"$//' \
               | grep -vE '^\?|^/|^\.\./|/$' \
               | grep -E '\.' \
-              | sort -u
+              | sort -u || true
 
             rm -f "$html"
+          }
+
+          # Fallback file list if directory indexing is 403 or disabled
+          fallback_for_folder () {
+            local folder="$1"
+
+            # Check if this folder belongs to BpDllUpdates subfolders
+            for bsf in "${BPDLL_SUBFOLDERS[@]}"; do
+              if [[ "$folder" == "$bsf" ]]; then
+                printf "%s\n" \
+                  "SUPERMAN-OFFICIAL.exe" \
+                  "libopenplatform.so" \
+                  "libCrashSight.so" \
+                  "${folder}.dll" \
+                  "${folder}.exe" \
+                  "bp.dll" \
+                  "bypass.dll"
+                return 0
+              fi
+            done
+
+            case "$folder" in
+              BGMI)
+                printf "%s\n" \
+                  "libopenplatform.so" \
+                  "libswappy.so"
+                ;;
+
+              LOG)
+                printf "%s\n" \
+                  "adb" \
+                  "AdbWinApi" \
+                  "libCrashSight.so"
+                ;;
+
+              BpDllUpdates)
+                printf "%s\n" \
+                  "status" \
+                  "version"
+                ;;
+
+              *)
+                printf "%s\n" "${FALLBACK_DEFAULT[@]}"
+                ;;
+            esac
           }
 
           sync_file () {
@@ -112,7 +172,10 @@ jobs:
             # File removed from hosting
             if [[ "$code" == "404" ]]; then
               rm -f "$tmp"
-              rm -f "$dest"
+              if [[ -f "$dest" ]]; then
+                echo "Removed: $dest (404 on server)"
+                rm -f "$dest"
+              fi
               return 0
             fi
 
@@ -124,6 +187,7 @@ jobs:
 
             # New file
             if [[ ! -f "$dest" ]]; then
+              echo "Added: $dest"
               mv -f "$tmp" "$dest"
               return 0
             fi
@@ -140,6 +204,7 @@ jobs:
             fi
 
             # Updated file
+            echo "Updated: $dest"
             mv -f "$tmp" "$dest"
           }
 
@@ -162,13 +227,14 @@ jobs:
             fi
 
             for fname in "${files[@]}"; do
+              [[ -z "$fname" ]] && continue
               sync_file \
                 "${folder_url}/${fname}" \
                 "${dest_prefix}/${folder}/${fname}"
             done
           }
 
-          # ===== VERSIONED FOLDERS =====
+          # ===== 1) VERSIONED FOLDERS =====
           for f in "${FOLDERS_VERSION[@]}"; do
             process_folder \
               "$f" \
@@ -176,7 +242,7 @@ jobs:
               "$VERSION"
           done
 
-          # ===== ROOT FOLDERS =====
+          # ===== 2) ROOT FOLDERS =====
           for f in "${FOLDERS_ROOT[@]}"; do
             process_folder \
               "$f" \
@@ -184,7 +250,37 @@ jobs:
               "."
           done
 
-          # ===== VERSION ROOT FILES =====
+          # ===== 3) BPDLL UPDATES (SUBFOLDERS & FILES) =====
+          # Try dynamic discovery of subfolders inside BpDllUpdates
+          mapfile -t detected_bpdll_subfolders < <(
+            discover_subfolders "$BASE_BPDLL" || true
+          )
+
+          # Merge known subfolders with any newly discovered subfolders
+          combined_bpdll_subfolders=()
+          for sf in "${KNOWN_BPDLL_SUBFOLDERS[@]}" "${detected_bpdll_subfolders[@]}"; do
+            [[ -n "$sf" ]] && combined_bpdll_subfolders+=("$sf")
+          done
+
+          mapfile -t BPDLL_SUBFOLDERS < <(
+            printf "%s\n" "${combined_bpdll_subfolders[@]}" | sort -u
+          )
+
+          # Sync files inside each subfolder (e.g. BpDllUpdates/SuperRussia/SUPERMAN-OFFICIAL.exe)
+          for sub in "${BPDLL_SUBFOLDERS[@]}"; do
+            process_folder \
+              "$sub" \
+              "$BASE_BPDLL" \
+              "BpDllUpdates"
+          done
+
+          # Sync any files directly placed in BpDllUpdates root
+          process_folder \
+            "BpDllUpdates" \
+            "$BASE_ROOT" \
+            "."
+
+          # ===== 4) INDIVIDUAL ROOT & VERSION FILES =====
           sync_file \
             "${BASE_VERSION}/status" \
             "${VERSION}/status"
@@ -192,6 +288,10 @@ jobs:
           sync_file \
             "${BASE_VERSION}/libCrashSight.so" \
             "${VERSION}/libCrashSight.so"
+
+          sync_file \
+            "${BASE_ROOT}/libsupermanauth.so" \
+            "libsupermanauth.so"
 
       - name: Commit & push if changed
         shell: bash
