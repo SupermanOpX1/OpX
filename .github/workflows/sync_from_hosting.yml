@@ -117,6 +117,7 @@ jobs:
             for bsf in "${BPDLL_SUBFOLDERS[@]}"; do
               if [[ "$folder" == "$bsf" ]]; then
                 printf "%s\n" \
+                  "ChineseEgg.dll" \
                   "SUPERMAN-OFFICIAL.exe" \
                   "libopenplatform.so" \
                   "libCrashSight.so" \
@@ -266,7 +267,7 @@ jobs:
             printf "%s\n" "${combined_bpdll_subfolders[@]}" | sort -u
           )
 
-          # Sync files inside each subfolder (e.g. BpDllUpdates/SuperRussia/SUPERMAN-OFFICIAL.exe)
+          # Sync files inside each subfolder (EOMAX, Loki, MrEslam, Shadow, SuperRussia)
           for sub in "${BPDLL_SUBFOLDERS[@]}"; do
             process_folder \
               "$sub" \
